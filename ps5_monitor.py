@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-PS5 光碟版主機 監控程式（PChome 24h）
+PS5 光碟版主機 監控程式（PChome 24h、Yahoo購物中心）
 - 每隔 N 秒查一次，找到「光碟版主機、價格 <= 上限、目前可購買」就推播通知
 - 只用 Python 標準函式庫，不用裝任何套件
 - 通知管道：ntfy（手機 App 最簡單）、Telegram、Discord，填哪個就用哪個
@@ -148,6 +148,42 @@ def check_pchome():
     return hits
 
 
+# ---------------- Yahoo購物中心 ----------------
+def yahoo_search(keyword):
+    q = urllib.parse.quote(keyword)
+    req = urllib.request.Request(f"https://tw.buy.yahoo.com/search/product?p={q}&sort=rel",
+                                 headers={**UA, "Accept-Language": "zh-TW,zh;q=0.9"})
+    with urllib.request.urlopen(req, timeout=20) as r:
+        page = r.read().decode("utf-8", errors="replace")
+    i = page.find('"ecsearch":{"hits":')
+    if i < 0:
+        raise ValueError("找不到商品資料（Yahoo 頁面格式可能改了）")
+    hits, _ = json.JSONDecoder().raw_decode(page, i + len('"ecsearch":{"hits":'))
+    return hits
+
+
+def check_yahoo():
+    seen = {}
+    for kw in KEYWORDS:
+        try:
+            for h in yahoo_search(kw):
+                name = h.get("ec_title", "")
+                if h.get("ec_productid") and is_target(name):
+                    seen[h["ec_productid"]] = h
+        except Exception as e:
+            log(f"Yahoo 搜尋「{kw}」失敗：{e}")
+        time.sleep(1)
+    hits = []
+    for pid, h in seen.items():
+        price = int(float(h.get("ec_price") or 0))
+        in_stock = h.get("ec_has_stock") == "1" and int(h.get("ec_stockcount") or 0) > 0
+        if in_stock and 0 < price <= MAX_PRICE:
+            hits.append({"store": "Yahoo", "id": pid, "name": h.get("ec_title", ""), "price": price,
+                         "url": h.get("ec_item_url") or f"https://tw.buy.yahoo.com/gdsale/gdsale.asp?gdid={pid}"})
+    log(f"Yahoo：符合名稱 {len(seen)} 筆，可購買且 ≤ {MAX_PRICE} 共 {len(hits)} 筆")
+    return hits
+
+
 # ---------------- 通知 ----------------
 def notify(title, body, url=None):
     sent = False
@@ -194,7 +230,12 @@ def save_state(state):
 
 
 def run_once(state):
-    hits = check_pchome()
+    hits = []
+    for checker in (check_pchome, check_yahoo):
+        try:
+            hits += checker()
+        except Exception as e:
+            log(f"{checker.__name__} 錯誤：{e}")
     now_ids = set()
     for h in hits:
         key = f"{h['store']}:{h['id']}"
