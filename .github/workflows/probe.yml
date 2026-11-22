@@ -5,6 +5,4 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - env:
-          NTFY_TOPIC: ${{ secrets.NTFY_TOPIC }}
-        run: python3 ps5_monitor.py --test-notify
+      - run: python3 probe/probe.py
