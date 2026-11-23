@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-PS5 光碟版主機 監控程式（PChome 24h、Yahoo購物中心）
+PS5 光碟版主機 監控程式（PChome 24h、Yahoo購物中心、宏碁遊戲）
 - 每隔 N 秒查一次，找到「光碟版主機、價格 <= 上限、目前可購買」就推播通知
 - 只用 Python 標準函式庫，不用裝任何套件
 - 通知管道：ntfy（手機 App 最簡單）、Telegram、Discord，填哪個就用哪個
@@ -16,6 +16,7 @@ import os
 import re
 import sys
 import time
+from html import unescape as html_unescape
 import urllib.parse
 import urllib.request
 from datetime import datetime
@@ -184,6 +185,44 @@ def check_yahoo():
     return hits
 
 
+# ---------------- 宏碁遊戲（PlayStation 台灣總代理）----------------
+def _get_text(url, timeout=20):
+    req = urllib.request.Request(url, headers={**UA, "Accept-Language": "zh-TW,zh;q=0.9"})
+    with urllib.request.urlopen(req, timeout=timeout) as r:
+        return r.read().decode("utf-8", errors="replace")
+
+
+def check_acer():
+    page = _get_text("https://www.acergaming.com/products/PS5")
+    cards = re.split(r'class="productItem\b', page)[1:]
+    seen = {}
+    for c in cards:
+        name = re.search(r'<h3 class="d-none">([^<]*)</h3>', c)
+        link = re.search(r'href="(https://www\.acergaming\.com/product/detail/([^"?]+)[^"]*)"', c)
+        price = re.search(r'data-price="([\d,]+)"', c)
+        if not (name and link and price):
+            continue
+        n = html_unescape(name.group(1))
+        if is_target(n):
+            seen[link.group(2)] = {"name": n, "url": link.group(1), "price": int(price.group(1).replace(",", ""))}
+    hits = []
+    for pid, p in seen.items():
+        if not (0 < p["price"] <= MAX_PRICE):
+            continue
+        try:
+            d = _get_text(p["url"])
+        except Exception as e:
+            log(f"宏碁 商品頁失敗 {pid}：{e}")
+            continue
+        m = re.search(r"availability:\s*'([a-z_ ]+)'", d)
+        status = m.group(1) if m else ""
+        if status and status != "out_of_stock":
+            hits.append({"store": "宏碁遊戲", "id": pid, "name": p["name"], "price": p["price"], "url": p["url"]})
+        time.sleep(1)
+    log(f"宏碁遊戲：符合名稱 {len(seen)} 筆，可購買且 ≤ {MAX_PRICE} 共 {len(hits)} 筆")
+    return hits
+
+
 # ---------------- 通知 ----------------
 def notify(title, body, url=None):
     sent = False
@@ -231,7 +270,7 @@ def save_state(state):
 
 def run_once(state):
     hits = []
-    for checker in (check_pchome, check_yahoo):
+    for checker in (check_pchome, check_yahoo, check_acer):
         try:
             hits += checker()
         except Exception as e:
